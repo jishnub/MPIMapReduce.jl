@@ -115,18 +115,27 @@ function _split_iterators(itzip, Niter, comm)
     it_local, np_mapreduce, np == np_mapreduce, emptyiter
 end
 
-_mapreduce(f, op, it) = mapreduce(x -> f(x...), (x,y) -> x .= op.(x, y), it)
-function _mapreduce(f, op::MPI.Op, it)
-    m = map(x -> f(x...), it)
+struct Elementwise{F}
+    f :: F
+end
+
+(o::Elementwise)(x, y) = o.f.(x, y)
+(o::Elementwise)(x::Array, y) = x .= o.f.(x, y)
+(o::Elementwise)(x, y::Array) = y .= o.f.(x, y)
+(o::Elementwise)(x::Array, y::Array) = x .= o.f.(x, y)
+
+_mapreduce_zipsection(f, op, it) = mapreduce(f, Elementwise(op), it)
+function _mapreduce_zipsection(f, op::MPI.Op, it)
+    m = map(f, it)
     length(m) == 1 || throw(ArgumentError("more than one value returned"))
     _reduce(first(m), op, 0, MPI.COMM_SELF)
 end
 
-function _mapreduce_local(::Reduce, f, op, it)
+function _mapreduce_local_zipsection(::Reduce, f, op, it)
     isempty(it) && return nothing
-    _mapreduce(f, op, it)
+    _mapreduce_zipsection(x -> f(x...), op, it)
 end
-function _mapreduce_local(::Concat, f, op, it)
+function _mapreduce_local_zipsection(::Concat, f, op, it)
     isempty(it) && return nothing
     mapreduce(x -> f(x...), op, it)
 end
@@ -180,13 +189,16 @@ function _pmapreduce_local(f, op, iterators...; root::Integer = 0, comm::MPI.Com
     _split_iterators(itzip, Niter, comm)
 end
 
-__singleprocess(::Reduce, f, op, iterators...) = _mapreduce(f, op, zip(iterators...))
-__singleprocess(::Concat, f, op, iterators...) = mapreduce(f, op, iterators...)
+# As such __mapreduce_singleprocess is almost identical to _mapreduce_local_zipsection, but we avoid using the zipped iterator
+# This is because mapreduce(f, hcat, itrs...) and reduce(hcat, map(f, itrs...)) differ for single element arrays
+# See issue https://github.com/JuliaLang/julia/issues/37917
+__mapreduce_singleprocess(::Reduce, f, op, iterators...) = _mapreduce_zipsection(x -> f(x...), op, zip(iterators...))
+__mapreduce_singleprocess(::Concat, f, op, iterators...) = mapreduce(f, op, iterators...)
 
-function _singleprocess(m::Operation, root, comm, np_mapreduce, f, op, iterators...)
+function _mapreduce_singleprocess(m::Operation, root, comm, np_mapreduce, f, op, iterators...)
     # Either 1 process or 1 element in the iterator
     if isroot(comm, root)
-        return __singleprocess(m, f, op, iterators...)
+        return __mapreduce_singleprocess(m, f, op, iterators...)
     else
         return nothing
     end
@@ -213,9 +225,9 @@ The result of `pmapreduce` is equivalent to that of `mapreduce(f, (x, y) -> op.(
 function pmapreduce(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI.COMM_WORLD)
     it, np_mapreduce, allactive, emptyiter  = _pmapreduce_local(f, op, iterators...; root = root, comm = comm)
     if np_mapreduce == 1
-        return _singleprocess(Reduce(), root, comm, np_mapreduce, f, op, iterators...)
+        return _mapreduce_singleprocess(Reduce(), root, comm, np_mapreduce, f, op, iterators...)
     end
-    m = _mapreduce_local(Reduce(), f, op, it)
+    m = _mapreduce_local_zipsection(Reduce(), f, op, it)
     _collectroot(_reduce, m, op, comm, root, emptyiter, allactive)
 end
 
@@ -236,9 +248,9 @@ The concatenation operator `op` may be one of `vcat`, `hcat` and [`Cat`](@ref).
 function pmapgatherv(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI.COMM_WORLD)
     it, np_mapreduce, allactive, emptyiter  = _pmapreduce_local(f, op, iterators...; root = root, comm = comm)
     if np_mapreduce == 1
-        return _singleprocess(Concat(), root, comm, np_mapreduce, f, op, iterators...)
+        return _mapreduce_singleprocess(Concat(), root, comm, np_mapreduce, f, op, iterators...)
     end
-    m = _mapreduce_local(Concat(), f, op, it)
+    m = _mapreduce_local_zipsection(Concat(), f, op, it)
     _collectroot(_gatherv, m, op, comm, root, emptyiter, allactive)
 end
 

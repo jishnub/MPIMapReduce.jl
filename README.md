@@ -1,5 +1,10 @@
 # MPIMapReduce
 
-Exports a function `pmapreduce` that performs a parallel map-reduce operation using MPI.
+Exports two functions:
 
-Aside from the MPI reduction operators, this also supports concatenation using `MPI.Gatherv`. See the documentation for details of the usage.
+1. `pmapreduce`, that performs a parallel map-reduce.
+2. `pmapgatherv`, that performs a parallel map-concatenation.
+
+In both these cases, the collective operation is carried out using MPI.
+
+See the documentation for details of the usage.

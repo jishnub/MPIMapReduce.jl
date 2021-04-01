@@ -71,7 +71,7 @@ end
 end
 
 function concattest(op)
-	for n in 1:10, (fmap, itrs) in  Any[
+	for n in 1:10, (ind, (fmap, itrs)) in  enumerate(Any[
 		(x -> x^2, (1:n,)),
 		((x, y) -> (x^2 + y^2), (1:n, 1:n)),
 		(x -> ones(2) * x^2, (1:n,)),
@@ -80,7 +80,7 @@ function concattest(op)
 		((x, y) -> ones(1,2) * (x^2 + y^2), (1:n, 1:n)),
 		(x -> ones(2,2,2) * x^2, (1:n,)),
 		((x, y) -> ones(2,2,2) * (x^2 + y^2), (1:n, 1:n)),
-		]
+		])
 
 		yexp = mapreduce(fmap, op, itrs...)
 
@@ -90,7 +90,7 @@ function concattest(op)
 				@test begin
 					res = y == yexp
 					if !res
-						@show n, np, root, y, yexp
+						@show n, np, ind, itrs, root, y, yexp
 					end
 					res
 				end
