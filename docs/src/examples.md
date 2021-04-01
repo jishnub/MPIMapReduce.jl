@@ -6,6 +6,7 @@ We may compute the elementwise sum of arrays on each processor as
 ```julia
 using MPIMapReduce
 using MPI
+MPI.Init()
 
 y1 = pmapreduce(x -> ones(2) * x, +, 1:5)
 
@@ -28,6 +29,7 @@ We may compute the elementwise product of arrays on each processor as
 ```julia
 using MPIMapReduce
 using MPI
+MPI.Init()
 
 y1 = pmapreduce(x -> ones(2, 2) * x, *, 1:4)
 
@@ -53,6 +55,7 @@ For example, we may concatenate `Vector`s along the second dimension as
 ```julia
 using MPIMapReduce
 using MPI
+MPI.Init()
 
 y = pmapgatherv(x -> ones(2) * x^2, hcat, 1:5)
 
@@ -74,6 +77,7 @@ For more general concatenations, use the reduction operator `Cat(dims)`, where `
 ```julia
 using MPIMapReduce
 using MPI
+MPI.Init()
 
 y = pmapgatherv(x -> x^2, Cat([1,2]), 1:3)
 
