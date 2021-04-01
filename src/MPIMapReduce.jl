@@ -4,12 +4,12 @@ using MPI
 include("concat.jl")
 
 export pmapreduce
+export pmapgatherv
+export Cat
 
-function __init__()
-    if !MPI.Initialized()
-        MPI.Init()
-    end
-end
+abstract type Operation end
+struct Reduce <: Operation end
+struct Concat <: Operation end
 
 isroot(comm::MPI.Comm, root::Integer) = MPI.Comm_rank(comm) == root
 
@@ -23,7 +23,6 @@ function nelementsdroptake(len, np, rank)
 end
 
 _reduce(x, op, root, comm) = MPI.Reduce(x, op, root, comm)
-_reduce(x, op::Union{typeof(vcat), typeof(hcat), Cat}, root, comm) = _gatherv(x, op, root, comm)
 
 function _vbuffer(x, counts, sizes, c::Cat)
     rcvbuf = _similar_cat(c, x, sizes, counts)
@@ -116,12 +115,23 @@ function _split_iterators(itzip, Niter, comm)
     it_local, np_mapreduce, np == np_mapreduce, emptyiter
 end
 
-function _mapreduce_local(f, op, it)
+_mapreduce(f, op, it) = mapreduce(x -> f(x...), (x,y) -> x .= op.(x, y), it)
+function _mapreduce(f, op::MPI.Op, it)
+    m = map(x -> f(x...), it)
+    length(m) == 1 || throw(ArgumentError("more than one value returned"))
+    _reduce(first(m), op, 0, MPI.COMM_SELF)
+end
+
+function _mapreduce_local(::Reduce, f, op, it)
+    isempty(it) && return nothing
+    _mapreduce(f, op, it)
+end
+function _mapreduce_local(::Concat, f, op, it)
     isempty(it) && return nothing
     mapreduce(x -> f(x...), op, it)
 end
 
-function _reduceroot(m, op, comm, root, emptyiter, allactive)
+function _collectroot(reducefn, m, op, comm, root, emptyiter, allactive)
     # If there are more processes than elements in the iterator, then some processes might
     # not be involved in the mapreduce. Split the communicator to exclude these processes
     # from the final reduction.
@@ -131,14 +141,14 @@ function _reduceroot(m, op, comm, root, emptyiter, allactive)
     if 0 <= root < np
         # Carry out the reduction only on processes that contain some elements
         if !emptyiter
-            return _reduce(m, op, root, comm_reduce)
+            return reducefn(m, op, root, comm_reduce)
         else
             return nothing
         end
     else
         # In this case the iterator on root is empty, so no reduction happens there
         # We carry out the reduction on comm_reduce and transfer the result to root
-        s = !emptyiter ? _reduce(m, op, 0, comm_reduce) : nothing
+        s = !emptyiter ? reducefn(m, op, 0, comm_reduce) : nothing
         tag = 32 # arbitrary
         if MPI.Comm_rank(comm) == 0
             MPI.send(s, root, tag, comm)
@@ -155,23 +165,7 @@ function _reduceroot(m, op, comm, root, emptyiter, allactive)
     return nothing
 end
 
-"""
-    pmapreduce(f, op, iterators...; [root = 0], [comm = MPI.COMM_WORLD])
-
-Apply function `f` to each element(s) in `iterators`, and then reduce the result using the elementwise
-binary reduction operator `op`.
-Both the `map` and the reduction are evaluated in parallel over the processes corresponding to the communicator `comm`.
-The result of the operation is returned at `root`, while `nothing` is returned at the other processes.
-
-The result of `pmapreduce` is identical to that of `mapreduce(f, op, iterators...)`.
-
-The reduction operator `op` may be any Julia operator supported by `MPI`, as well as one of `vcat`, `hcat` and
-[`Cat`](@ref).
-
-!!! warn
-    `MPI` reduction operators (eg. `MPI.SUM`) are not supported at present.
-"""
-function pmapreduce(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI.COMM_WORLD)
+function _pmapreduce_local(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI.COMM_WORLD)
     if !(0 <= root < MPI.Comm_size(comm))
         throw(ArgumentError("root = $root does not satisfy  0 <= root < $(MPI.Comm_size(comm))"))
     end
@@ -183,25 +177,69 @@ function pmapreduce(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI
         throw(ArgumentError("reducing over an empty collection is not allowed"))
     end
 
-    it, np_mapreduce, allactive, emptyiter = _split_iterators(itzip, Niter, comm)
+    _split_iterators(itzip, Niter, comm)
+end
 
-    rank = MPI.Comm_rank(comm)
+__singleprocess(::Reduce, f, op, iterators...) = _mapreduce(f, op, zip(iterators...))
+__singleprocess(::Concat, f, op, iterators...) = mapreduce(f, op, iterators...)
 
-    if np_mapreduce == 1
-        # Either 1 process or 1 element in the iterator
-        # no need for MPI here
-        if isroot(comm, root)
-            return mapreduce(f, op, iterators...)
-        else
-            return nothing
-        end
+function _singleprocess(m::Operation, root, comm, np_mapreduce, f, op, iterators...)
+    # Either 1 process or 1 element in the iterator
+    if isroot(comm, root)
+        return __singleprocess(m, f, op, iterators...)
+    else
+        return nothing
     end
+end
 
-    m = _mapreduce_local(f, op, it)
+"""
+    pmapreduce(f, op, iterators...; [root = 0], [comm = MPI.COMM_WORLD])
 
-    r = _reduceroot(m, op, comm, root, emptyiter, allactive)
+Apply function `f` to each element(s) in `iterators`, and then reduce the result using the elementwise
+binary reduction operator `op`.
+Both the `map` and the reduction are evaluated in parallel over the processes corresponding to the communicator `comm`.
+The result of the operation is returned at `root`, while `nothing` is returned at the other processes.
 
-    return r
+The result of `pmapreduce` is equivalent to that of `mapreduce(f, (x, y) -> op.(x, y), iterators...)`.
+
+!!! note
+    Unlike the standard `mapreduce` operation in Julia, this operation is performed elementwise on the arrays returned
+    from the various processes. The returned value must be compatible with the elementwise operation.
+
+!!! note
+    MPI reduction operators require each worker to return only one array with an eltype `T` that
+    satisfies `isbitstype(T) == true`. Such a limitation does not exist for Julia operators.
+"""
+function pmapreduce(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI.COMM_WORLD)
+    it, np_mapreduce, allactive, emptyiter  = _pmapreduce_local(f, op, iterators...; root = root, comm = comm)
+    if np_mapreduce == 1
+        return _singleprocess(Reduce(), root, comm, np_mapreduce, f, op, iterators...)
+    end
+    m = _mapreduce_local(Reduce(), f, op, it)
+    _collectroot(_reduce, m, op, comm, root, emptyiter, allactive)
+end
+
+"""
+    pmapgatherv(f, op, iterators...; [root = 0], [comm = MPI.COMM_WORLD])
+
+Apply function `f` to each element(s) in `iterators`, and then reduce the result using the concatenation operator `op`.
+Both the `map` and the reduction are evaluated in parallel over the processes corresponding to the communicator `comm`.
+The result of the operation is returned at `root`, while `nothing` is returned at the other processes.
+
+The result of `pmapgatherv` is equivalent to that of `mapreduce(f, op, iterators...)`.
+
+The concatenation operator `op` may be one of `vcat`, `hcat` and [`Cat`](@ref).
+
+!!! warn
+    Anonymous functions are not supported as the concatenation operator.
+"""
+function pmapgatherv(f, op, iterators...; root::Integer = 0, comm::MPI.Comm = MPI.COMM_WORLD)
+    it, np_mapreduce, allactive, emptyiter  = _pmapreduce_local(f, op, iterators...; root = root, comm = comm)
+    if np_mapreduce == 1
+        return _singleprocess(Concat(), root, comm, np_mapreduce, f, op, iterators...)
+    end
+    m = _mapreduce_local(Concat(), f, op, it)
+    _collectroot(_gatherv, m, op, comm, root, emptyiter, allactive)
 end
 
 end

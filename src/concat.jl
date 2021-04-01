@@ -9,14 +9,14 @@ Operator that performs a concatenation over the dimensions `dims`.
 julia> c1 = MPIMapReduce.Cat(1);
 
 julia> c1([1], [2])
-2-element Array{Int64,1}:
+2-element Vector{Int64}:
  1
  2
 
 julia> c2 = MPIMapReduce.Cat(2);
 
 julia> c2([1], [2])
-1×2 Array{Int64,2}:
+1×2 Matrix{Int64}:
  1  2
 ```
 """
