@@ -189,8 +189,8 @@ function _pmapreduce_local(f, op, iterators...; root::Integer = 0, comm::MPI.Com
     _split_iterators(itzip, Niter, comm)
 end
 
-# As such __mapreduce_singleprocess is almost identical to _mapreduce_local_zipsection, but we avoid using the zipped iterator
-# This is because mapreduce(f, hcat, itrs...) and reduce(hcat, map(f, itrs...)) differ for single element arrays
+# __mapreduce_singleprocess is almost identical to _mapreduce_local_zipsection, but we avoid using the zipped iterator
+# This is because mapreduce(f, hcat, itrs...) and reduce(hcat, map(f, itrs...)) currently differ for single element arrays
 # See issue https://github.com/JuliaLang/julia/issues/37917
 __mapreduce_singleprocess(::Reduce, f, op, iterators...) = _mapreduce_zipsection(x -> f(x...), op, zip(iterators...))
 __mapreduce_singleprocess(::Concat, f, op, iterators...) = mapreduce(f, op, iterators...)
