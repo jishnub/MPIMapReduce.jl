@@ -1,7 +1,7 @@
 name = "MPIMapReduce"
 uuid = "02e612b2-dee0-47c3-933b-ef05e3915492"
 authors = ["jishnub <jishnub@users.noreply.github.com> and contributors"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
